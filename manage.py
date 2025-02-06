@@ -14,10 +14,19 @@ def open_console():
     shell.interact()
 
 def initialise_command_line_args():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Seq Generator")
     parser.add_argument('--console',
+                        '-c',
                         action='store_true',
                         help='Open interactive console')
+    parser.add_argument(
+        '--input-file', '-i',
+        default='names.txt',
+        help='Input File of words/sentences One per line'
+    )
+    # parser.add_argument(
+    #     '--'
+    # )
     return parser
 
 if __name__ == "__main__":

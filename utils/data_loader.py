@@ -1,4 +1,5 @@
 import torch
+import torch.utils
 from torch.utils.data import RandomSampler
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
@@ -7,59 +8,109 @@ from torch.nn.utils.rnn import pad_sequence
 
 class SentencesDataset(Dataset):
 
-    def __init__(self, file_path, vocab=None, transform=None, max_len=None):
-        self.sentences = self._load_data_from_file(file_path)
-        self.transform = transform
-        self.max_len = max_len
-        if vocab:
-            vocab.build_vocabulary_from_dataset(self.sentences)
+    def __init__(self, dataset, vocab, tokenizer, transform=None, add_sos=None, add_eos=None, input_seq_len=None):
+        self.dataset = dataset
         self.vocab = vocab
-    
-    def _load_data_from_file(self, file_path):
-        with open(file_path, 'r') as file:
-            sentences = file.readlines()
-        sentences = [
-            sentence.strip() for sentence in sentences
-        ]
-        return [
-            sentence for sentence in sentences if sentence
-        ]
+        self.tokenizer = tokenizer
+        self.add_sos = add_sos
+        self.add_eos = add_eos
+        self.transform = transform
+        self.input_seq_len = input_seq_len
     
     def __len__(self):
-        return len(self.sentences)
-
+        return len(self.dataset)
+    
     def __getitem__(self, index):
-        sentence = self.sentences[index]
+        data = self.dataset[index]
         if self.transform:
-            sentence = self.transform(sentence)
-        if self.vocab:
-            sentence = self.vocab.tokenize_and_convert_to_indices(sentence)
-            sentence = [self.vocab.token_to_index("<SOS>")] + sentence + [self.vocab.token_to_index("<EOS>")]
-        if self.max_len:
-            sentence = sentence[:self.max_len]
-        return sentence
+            data = self.transform(data)
+        tokens = self.tokenizer(data)
+        token_indices = self.vocab.build_indices_from_tokens(tokens)
+        if self.add_sos:
+            token_indices = [self.vocab.get_idx_from_token('<SOS>')] + token_indices
+        if self.add_eos:
+            token_indices = token_indices + [self.vocab.get_idx_from_token('<EOS>')]
+        if self.input_seq_len:
+            tokens = tokens[:self.input_seq_len]
+        sequence = torch.tensor(token_indices, dtype=torch.long)
+        return sequence
 
-def collate_fn(batch):
-    batch = [torch.tensor(item) for item in batch]
-    batch = pad_sequence(batch, batch_first=True, padding_value=-1)
-    return batch
+def collate_fn(padding_value):
+    def solve(batch):
+        batch = pad_sequence(batch, batch_first=True, padding_value=padding_value)
+        X = batch[:, :-1]
+        Y = batch[:, 1:]
+        return X, Y
+    return solve
 
-def get_infinite_data_loader(file_path, batch_size, transform=None, max_len=None):
+def get_infinite_data_loader(
+    file_path,
+    batch_size,
+    tokenizer,
+    add_sos=None,
+    add_eos=None,
+    transform=None,
+    max_len=None,
+    padding_value=-1,
+    test_split=0.2
+):
     vocab = Vocabulary()
 
-    dataset = SentencesDataset(
-        file_path, 
-        vocab=vocab, 
-        transform=transform, 
-        max_len=max_len
+    with open(file_path, 'r') as f:
+        data = f.read()
+    sentences = data.splitlines()
+    sentences = [sentence.strip() for sentence in sentences]
+    sentences = [sentence for sentence in sentences if sentence]
+    
+    all_tokens = []
+    for sentence in sentences:
+        if transform:
+            sentence = transform(sentence)
+        tokens = tokenizer(sentence)
+        all_tokens.extend(tokens)
+    vocab.build_indices_from_tokens(all_tokens)
+
+    test_size = int(len(sentences) * test_split)
+    train_size = len(sentences) - test_size
+
+    train_sentences, test_sentences = torch.utils.data.random_split(
+        sentences, [train_size, test_size]
     )
-    sampler = RandomSampler(dataset, replacement=True)
-    data_loader = DataLoader(
-        dataset,
+
+    train_dataset = SentencesDataset(
+        train_sentences,
+        vocab,
+        tokenizer,
+        transform=transform,
+        add_eos=add_eos,
+        add_sos=add_sos,
+        input_seq_len=max_len
+    )
+
+    test_dataset = SentencesDataset(
+        test_sentences,
+        vocab,
+        tokenizer,
+        transform=transform,
+        add_eos=add_eos,
+        add_sos=add_sos,
+        input_seq_len=max_len
+    )
+
+    train_loader = DataLoader(
+        dataset=train_dataset,
         batch_size=batch_size,
-        sampler=sampler,
-        collate_fn=collate_fn
+        shuffle=True,
+        collate_fn=collate_fn(padding_value)
     )
-    return data_loader, vocab
+
+    test_loader = DataLoader(
+        dataset=test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_fn(padding_value)
+    )
+    
+    return train_loader, test_loader, vocab
         
 
